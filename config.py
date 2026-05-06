@@ -1,0 +1,38 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+
+# Mainnet
+FIREBLOCKS_API_KEY = os.getenv("FIREBLOCKS_API_KEY")
+FIREBLOCKS_PRIVATE_KEY_PATH = os.getenv("FIREBLOCKS_PRIVATE_KEY_PATH")
+VAULT_ACCOUNT_ID = os.getenv("VAULT_ACCOUNT_ID")
+ASSET_ID = os.getenv("ASSET_ID")
+CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS", "").lower() or None
+
+# Testnet
+TESTNET_API_KEY = os.getenv("TESTNET_API_KEY")
+TESTNET_PRIVATE_KEY_PATH = os.getenv("TESTNET_PRIVATE_KEY_PATH")
+TESTNET_VAULT_ACCOUNT_ID = os.getenv("TESTNET_VAULT_ACCOUNT_ID")
+TESTNET_ASSET_ID = os.getenv("TESTNET_ASSET_ID")
+
+POLL_INTERVAL_SECONDS = int(os.getenv("POLL_INTERVAL_SECONDS", "3600"))
+STATE_FILE = os.getenv("STATE_FILE", "state.json")
+
+for name, val in [
+    ("BOT_TOKEN", BOT_TOKEN),
+    ("CHAT_ID", CHAT_ID),
+    ("FIREBLOCKS_API_KEY", FIREBLOCKS_API_KEY),
+    ("FIREBLOCKS_PRIVATE_KEY_PATH", FIREBLOCKS_PRIVATE_KEY_PATH),
+    ("VAULT_ACCOUNT_ID", VAULT_ACCOUNT_ID),
+    ("ASSET_ID", ASSET_ID),
+    ("TESTNET_API_KEY", TESTNET_API_KEY),
+    ("TESTNET_PRIVATE_KEY_PATH", TESTNET_PRIVATE_KEY_PATH),
+    ("TESTNET_VAULT_ACCOUNT_ID", TESTNET_VAULT_ACCOUNT_ID),
+    ("TESTNET_ASSET_ID", TESTNET_ASSET_ID),
+]:
+    if not val:
+        raise ValueError(f"{name} is not set in .env")
