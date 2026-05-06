@@ -47,19 +47,27 @@ def get_incoming_transactions(
         logger.error(f"Fireblocks API error: {e}")
         return []
 
+    logger.info(f"Fireblocks returned {len(txs)} completed tx(s) after {after_ms}")
     results = []
     for tx in txs:
-        if tx.get("assetId") != asset_id:
-            continue
+        tx_asset = tx.get("assetId")
         dest = tx.get("destination", {})
-        if dest.get("type") != "VAULT_ACCOUNT":
+        dest_type = dest.get("type")
+        dest_id = dest.get("id")
+        if tx_asset != asset_id:
+            logger.debug(f"  skip {tx.get('id')}: asset {tx_asset} != {asset_id}")
             continue
-        if dest.get("id") != vault_account_id:
+        if dest_type != "VAULT_ACCOUNT":
+            logger.debug(f"  skip {tx.get('id')}: dest.type {dest_type!r} != VAULT_ACCOUNT")
+            continue
+        if dest_id != vault_account_id:
+            logger.debug(f"  skip {tx.get('id')}: dest.id {dest_id!r} != {vault_account_id!r}")
             continue
         if contract_address:
             extra = tx.get("extraParameters") or {}
             if extra.get("contractAddress", "").lower() != contract_address:
                 continue
+        logger.info(f"  matched tx {tx.get('id')}")
         results.append(tx)
 
     return results

@@ -28,7 +28,7 @@ from state import load_state, save_state
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
-    level=logging.INFO,
+    level=logging.DEBUG,
 )
 logger = logging.getLogger(__name__)
 
