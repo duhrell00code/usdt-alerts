@@ -204,7 +204,7 @@ async def main():
     scheduler.add_job(
         check_unacknowledged_polls,
         "interval",
-        seconds=300,  # every 5 minutes
+        seconds=5,
         kwargs={"bot": bot, "state": state},
         id="poll_check",
         next_run_time=datetime.datetime.now(),
@@ -219,7 +219,7 @@ async def main():
     )
 
     scheduler.start()
-    logger.info(f"Running. Fireblocks poll every {POLL_INTERVAL_SECONDS}s, ack check every 5min, sweep reminder weekdays 15:30 SGT.")
+    logger.info(f"Running. Fireblocks poll every {POLL_INTERVAL_SECONDS}s, ack check every 5s, sweep reminder weekdays 15:30 SGT.")
 
     try:
         await asyncio.Event().wait()
