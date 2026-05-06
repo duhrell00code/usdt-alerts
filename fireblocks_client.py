@@ -6,10 +6,10 @@ from fireblocks_sdk import FireblocksSDK, TRANSACTION_STATUS_COMPLETED
 logger = logging.getLogger(__name__)
 
 
-def load_sdk(api_key: str, private_key_path: str) -> FireblocksSDK:
-    # On Railway/cloud: set FIREBLOCKS_PRIVATE_KEY env var with key file contents.
+def load_sdk(api_key: str, private_key_path: str, env_var: str = "FIREBLOCKS_PRIVATE_KEY") -> FireblocksSDK:
+    # On Railway/cloud: set env_var with key file contents.
     # Locally: falls back to reading from the key file path.
-    private_key = os.getenv("FIREBLOCKS_PRIVATE_KEY")
+    private_key = os.getenv(env_var)
     if not private_key:
         with open(private_key_path, "r") as f:
             private_key = f.read()

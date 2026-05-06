@@ -165,7 +165,7 @@ async def main():
     sdk = load_sdk(FIREBLOCKS_API_KEY, FIREBLOCKS_PRIVATE_KEY_PATH)
     logger.info("Fireblocks mainnet SDK initialised")
 
-    testnet_sdk = load_sdk(TESTNET_API_KEY, TESTNET_PRIVATE_KEY_PATH)
+    testnet_sdk = load_sdk(TESTNET_API_KEY, TESTNET_PRIVATE_KEY_PATH, env_var="TESTNET_FIREBLOCKS_PRIVATE_KEY")
     logger.info("Fireblocks testnet SDK initialised")
 
     state = load_state(STATE_FILE)
