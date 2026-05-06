@@ -26,13 +26,15 @@ for name, val in [
     ("BOT_TOKEN", BOT_TOKEN),
     ("CHAT_ID", CHAT_ID),
     ("FIREBLOCKS_API_KEY", FIREBLOCKS_API_KEY),
-    ("FIREBLOCKS_PRIVATE_KEY_PATH", FIREBLOCKS_PRIVATE_KEY_PATH),
     ("VAULT_ACCOUNT_ID", VAULT_ACCOUNT_ID),
     ("ASSET_ID", ASSET_ID),
     ("TESTNET_API_KEY", TESTNET_API_KEY),
-    ("TESTNET_PRIVATE_KEY_PATH", TESTNET_PRIVATE_KEY_PATH),
     ("TESTNET_VAULT_ACCOUNT_ID", TESTNET_VAULT_ACCOUNT_ID),
     ("TESTNET_ASSET_ID", TESTNET_ASSET_ID),
 ]:
     if not val:
         raise ValueError(f"{name} is not set in .env")
+
+# At least one of key file or key content must be available
+if not FIREBLOCKS_PRIVATE_KEY_PATH and not os.getenv("FIREBLOCKS_PRIVATE_KEY"):
+    raise ValueError("Either FIREBLOCKS_PRIVATE_KEY_PATH or FIREBLOCKS_PRIVATE_KEY must be set")
