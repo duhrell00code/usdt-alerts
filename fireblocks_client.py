@@ -13,6 +13,7 @@ def load_sdk(api_key: str, private_key_path: str, env_var: str = "FIREBLOCKS_PRI
     if not private_key:
         with open(private_key_path, "r") as f:
             private_key = f.read()
+    private_key = private_key.replace("\\n", "\n")
     return FireblocksSDK(private_key, api_key)
 
 
