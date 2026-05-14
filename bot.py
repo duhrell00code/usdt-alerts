@@ -20,6 +20,7 @@ from config import (
     TESTNET_PRIVATE_KEY_PATH,
     TESTNET_VAULT_ACCOUNT_ID,
     TESTNET_ASSET_ID,
+    TESTNET_NOTIFICATIONS_ENABLED,
     POLL_INTERVAL_SECONDS,
     STATE_FILE,
 )
@@ -188,19 +189,22 @@ async def main():
         id="fireblocks_poll_mainnet",
         next_run_time=now,
     )
-    scheduler.add_job(
-        poll_fireblocks,
-        "interval",
-        seconds=POLL_INTERVAL_SECONDS,
-        kwargs={
-            "bot": bot, "sdk": testnet_sdk, "state": state,
-            "vault_account_id": TESTNET_VAULT_ACCOUNT_ID, "asset_id": TESTNET_ASSET_ID,
-            "contract_address": None, "state_key": "testnet_last_checked_ms",
-            "testnet": True,
-        },
-        id="fireblocks_poll_testnet",
-        next_run_time=now + datetime.timedelta(seconds=5),
-    )
+    if TESTNET_NOTIFICATIONS_ENABLED:
+        scheduler.add_job(
+            poll_fireblocks,
+            "interval",
+            seconds=POLL_INTERVAL_SECONDS,
+            kwargs={
+                "bot": bot, "sdk": testnet_sdk, "state": state,
+                "vault_account_id": TESTNET_VAULT_ACCOUNT_ID, "asset_id": TESTNET_ASSET_ID,
+                "contract_address": None, "state_key": "testnet_last_checked_ms",
+                "testnet": True,
+            },
+            id="fireblocks_poll_testnet",
+            next_run_time=now + datetime.timedelta(seconds=5),
+        )
+    else:
+        logger.info("Testnet notifications disabled — skipping testnet poll job")
     scheduler.add_job(
         check_unacknowledged_polls,
         "interval",
@@ -219,7 +223,8 @@ async def main():
     )
 
     scheduler.start()
-    logger.info(f"Running. Fireblocks poll every {POLL_INTERVAL_SECONDS}s, ack check every 5s, sweep reminder weekdays 15:30 SGT.")
+    testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"
+    logger.info(f"Running. Fireblocks poll every {POLL_INTERVAL_SECONDS}s, ack check every 5s, sweep reminder weekdays 15:30 SGT. Testnet notifications: {testnet_status}.")
 
     try:
         await asyncio.Event().wait()
