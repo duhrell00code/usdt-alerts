@@ -17,6 +17,8 @@ from config import (
     VAULT_ACCOUNT_ID,
     ASSET_ID,
     CONTRACT_ADDRESS,
+    RSTR_VAULT_ACCOUNT_ID,
+    RSTR_CONTRACT_ADDRESS,
     TESTNET_API_KEY,
     TESTNET_PRIVATE_KEY_PATH,
     TESTNET_VAULT_ACCOUNT_ID,
@@ -149,14 +151,18 @@ async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
 
 async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     now_ms = int(time.time() * 1000)
-    after_ms = state["last_checked_ms"]
 
-    logger.info(f"Daily mainnet check — polling for transactions after {after_ms} ...")
-    txs = get_incoming_transactions(sdk, VAULT_ACCOUNT_ID, ASSET_ID, after_ms, CONTRACT_ADDRESS)
+    logger.info(f"Daily mainnet check — polling rAI vault after {state['last_checked_ms']} ...")
+    rai_txs = get_incoming_transactions(sdk, VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS)
 
-    if txs:
-        logger.info(f"Found {len(txs)} new mainnet transaction(s)")
-    for tx in txs:
+    logger.info(f"Daily mainnet check — polling rSTR vault after {state['rstr_last_checked_ms']} ...")
+    rstr_txs = get_incoming_transactions(sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID, state["rstr_last_checked_ms"], RSTR_CONTRACT_ADDRESS)
+
+    all_txs = rai_txs + rstr_txs
+    if all_txs:
+        logger.info(f"Found {len(all_txs)} new mainnet transaction(s) (rAI={len(rai_txs)}, rSTR={len(rstr_txs)})")
+
+    for tx in all_txs:
         try:
             alert_text = format_alert(tx, testnet=False)
             await send_alert_with_poll(bot, alert_text, state)
@@ -164,28 +170,37 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
             logger.error(f"Failed to send alert for tx {tx.get('id')}: {e}")
 
     state["last_checked_ms"] = now_ms
+    state["rstr_last_checked_ms"] = now_ms
     save_state(STATE_FILE, state)
 
-    if txs:
-        summary = f"✅ Daily vault check — {len(txs)} new transfer(s) found, alerts sent above.\n\n@daryllty"
+    if all_txs:
+        summary = f"✅ Daily vault check — {len(all_txs)} new transfer(s) found, alerts sent above.\n\n@daryllty"
     else:
         summary = "✅ Polled the vault — no new incoming funds today.\n\nAll clear, relax for today!\n\n@daryllty"
 
     try:
         await bot.send_message(chat_id=CHAT_ID, text=summary)
-        logger.info(f"Daily summary sent (txs={len(txs)})")
+        logger.info(f"Daily summary sent (txs={len(all_txs)})")
     except TelegramError as e:
         logger.error(f"Failed to send daily summary: {e}")
 
 
 async def send_sweep_reminder(bot: Bot, sdk) -> None:
-    balance = await asyncio.to_thread(get_vault_balance, sdk, VAULT_ACCOUNT_ID, ASSET_ID)
-    if balance <= 0:
-        logger.info(f"Sweep reminder skipped — vault balance is {balance}")
+    rai_balance, rstr_balance = await asyncio.gather(
+        asyncio.to_thread(get_vault_balance, sdk, VAULT_ACCOUNT_ID, ASSET_ID),
+        asyncio.to_thread(get_vault_balance, sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID),
+    )
+    if rai_balance < 99 and rstr_balance < 99:
+        logger.info(f"Sweep reminder skipped — rAI={rai_balance}, rSTR={rstr_balance}")
         return
+    lines = ["@daryllty Sweep funds -> FOMO", ""]
+    if rai_balance >= 99:
+        lines.append(f"rAI Vault:  {rai_balance} {ASSET_ID}")
+    if rstr_balance >= 99:
+        lines.append(f"rSTR Vault: {rstr_balance} {ASSET_ID}")
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=f"@daryllty Sweep funds -> FOMO\n\nCurrent balance: {balance} {ASSET_ID}")
-        logger.info(f"Sweep reminder sent (balance={balance})")
+        await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines))
+        logger.info(f"Sweep reminder sent (rAI={rai_balance}, rSTR={rstr_balance})")
     except TelegramError as e:
         logger.error(f"Failed to send sweep reminder: {e}")
 

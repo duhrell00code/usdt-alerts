@@ -11,6 +11,7 @@ def load_state(path: str) -> dict:
         with open(path) as f:
             data = json.load(f)
         data.setdefault("last_checked_ms", _now_ms() - LOOKBACK_MS)
+        data.setdefault("rstr_last_checked_ms", _now_ms() - LOOKBACK_MS)
         data.setdefault("testnet_last_checked_ms", _now_ms() - LOOKBACK_MS)
         data.setdefault("update_offset", 0)
         data.setdefault("pending_polls", {})
@@ -18,6 +19,7 @@ def load_state(path: str) -> dict:
     now = _now_ms()
     return {
         "last_checked_ms": now - LOOKBACK_MS,
+        "rstr_last_checked_ms": now - LOOKBACK_MS,
         "testnet_last_checked_ms": now - LOOKBACK_MS,
         "update_offset": 0,
         "pending_polls": {},
