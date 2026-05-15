@@ -25,7 +25,8 @@ There is no test suite, linter, or build step. `requirements.txt` is the depende
 
 `.env.example` is incomplete. `config.py` also requires:
 
-- `RSTR_VAULT_ACCOUNT_ID`, `RSTR_CONTRACT_ADDRESS` — second mainnet vault (rSTR), polled alongside the rAI vault on the daily check.
+- `RSTR_VAULT_ACCOUNT_ID`, `RSTR_CONTRACT_ADDRESS` — second mainnet subscription vault (rSTR), polled alongside the rAI subscription vault on the daily check.
+- `RAI_REDEMPTION_VAULT_ACCOUNT_ID`, `RAI_REDEMPTION_ASSET_ID`, `RAI_REDEMPTION_CONTRACT_ADDRESS` — vault that receives rAI tokens from redeeming investors (asset is the rAI token itself, not USDT).
 - `TESTNET_API_KEY`, `TESTNET_PRIVATE_KEY_PATH`, `TESTNET_VAULT_ACCOUNT_ID`, `TESTNET_ASSET_ID` — separate Fireblocks workspace for the testnet poller.
 - `TESTNET_NOTIFICATIONS_ENABLED` (default `true`) — set to `false` to skip the testnet job entirely.
 - `FIREBLOCKS_PRIVATE_KEY` / `TESTNET_FIREBLOCKS_PRIVATE_KEY` — used on Railway in place of the file path. `load_sdk` in `fireblocks_client.py` reads the env var first, falls back to the file, and replaces literal `\n` with newlines (Railway strips real newlines from env values).
@@ -34,10 +35,10 @@ There is no test suite, linter, or build step. `requirements.txt` is the depende
 
 Single-process asyncio app with one `AsyncIOScheduler` running four jobs:
 
-1. **`daily_mainnet_check`** — cron at 15:30 SGT. Polls both mainnet vaults (rAI via `VAULT_ACCOUNT_ID`/`CONTRACT_ADDRESS`, rSTR via `RSTR_VAULT_ACCOUNT_ID`/`RSTR_CONTRACT_ADDRESS`), sends per-tx alert+poll, then **always** sends a daily summary message (this is intentional — see commit `961f1ef`).
+1. **`daily_mainnet_check`** — cron Tue–Sat 15:30 SGT. Polls three vaults: rAI subscription (`VAULT_ACCOUNT_ID` + USDT + `CONTRACT_ADDRESS`), rSTR subscription (`RSTR_VAULT_ACCOUNT_ID` + USDT + `RSTR_CONTRACT_ADDRESS`), and rAI redemption (`RAI_REDEMPTION_VAULT_ACCOUNT_ID` + `RAI_REDEMPTION_ASSET_ID` + `RAI_REDEMPTION_CONTRACT_ADDRESS`). Subscription txs are tagged `SUBSCRIPTIONS`, redemption txs `REDEMPTIONS` — the tag becomes a bold first line in the Telegram alert. Sends per-tx alert+poll, then **always** sends a daily summary that breaks out the subscription and redemption counts (this is intentional — see commit `961f1ef`).
 2. **`poll_fireblocks` (testnet)** — interval `POLL_INTERVAL_SECONDS` (default 60). Only registered when `TESTNET_NOTIFICATIONS_ENABLED`.
 3. **`check_unacknowledged_polls`** — every 5 seconds. Reads `bot.get_updates(allowed_updates=["poll_answer"])`, advances `state["update_offset"]`, handles `Acknowledge` (clears) and `Snooze` (resets timer). Re-sends any poll that has been pending ≥ `RENOTIFY_SECONDS` (30 min).
-4. **`send_sweep_reminder`** — cron Mon–Fri 15:30 SGT. Fetches both mainnet vault balances in parallel via `asyncio.to_thread`; sends one consolidated message only if at least one vault is ≥ 99 of `ASSET_ID`.
+4. **`send_sweep_reminder`** — cron Tue–Sat 15:30 SGT. Fetches both mainnet vault balances in parallel via `asyncio.to_thread`; sends one consolidated message only if at least one vault is ≥ 99 of `ASSET_ID`.
 
 State is a single JSON file (`STATE_FILE`, default `state.json`) persisted after every poll cycle. Keys: `last_checked_ms` (rAI), `rstr_last_checked_ms`, `testnet_last_checked_ms`, `update_offset` (Telegram long-poll cursor), `pending_polls` (poll_id → `{sent_at, alert_text}`). On fresh start, `load_state` seeds each cursor to `now − 10 min` so a restart still catches recent activity.
 
@@ -47,7 +48,7 @@ State is a single JSON file (`STATE_FILE`, default `state.json`) persisted after
 
 ### Alert + poll flow
 
-`send_alert_with_poll` sends two Telegram messages: a plain-text alert, then a non-anonymous poll with `Acknowledge` / `Snooze` options. The poll ID is stored in `state["pending_polls"]`. Snooze resets `sent_at`; the 30-min re-alert path **deletes the old poll entry then re-sends a fresh alert+poll** (it does not edit the existing poll).
+`send_alert_with_poll` sends two Telegram messages: an HTML-formatted alert (`parse_mode="HTML"`, with `<b>SUBSCRIPTIONS</b>` or `<b>REDEMPTIONS</b>` as the first line when `format_alert` is called with a `category`), then a non-anonymous poll with `Acknowledge` / `Snooze` options. Dynamic content in the alert is run through `html.escape` because of the HTML parse mode. The poll ID is stored in `state["pending_polls"]`. Snooze resets `sent_at`; the 30-min re-alert path **deletes the old poll entry then re-sends a fresh alert+poll** (it does not edit the existing poll).
 
 State mutations happen inside scheduler jobs and are all single-threaded under asyncio — no locking. Each job calls `save_state` before returning.
 

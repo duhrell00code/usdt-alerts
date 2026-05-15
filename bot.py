@@ -1,7 +1,9 @@
 import asyncio
 import datetime
+import html
 import logging
 import time
+from typing import Optional
 import pytz
 
 from telegram import Bot
@@ -19,6 +21,9 @@ from config import (
     CONTRACT_ADDRESS,
     RSTR_VAULT_ACCOUNT_ID,
     RSTR_CONTRACT_ADDRESS,
+    RAI_REDEMPTION_VAULT_ACCOUNT_ID,
+    RAI_REDEMPTION_ASSET_ID,
+    RAI_REDEMPTION_CONTRACT_ADDRESS,
     TESTNET_API_KEY,
     TESTNET_PRIVATE_KEY_PATH,
     TESTNET_VAULT_ACCOUNT_ID,
@@ -39,20 +44,23 @@ logger = logging.getLogger(__name__)
 RENOTIFY_SECONDS = 1800  # 30 minutes
 
 
-def format_alert(tx: dict, testnet: bool = False) -> str:
-    amount = tx.get("amount", "?")
-    asset = tx.get("assetId", "")
-    tx_hash = tx.get("txHash", "")
-    tx_id = tx.get("id", "")
-    source_name = (tx.get("source") or {}).get("name", "unknown")
-    source_address = tx.get("sourceAddress", "")
+def format_alert(tx: dict, category: Optional[str] = None, testnet: bool = False) -> str:
+    amount = html.escape(str(tx.get("amount", "?")))
+    asset = html.escape(tx.get("assetId", ""))
+    tx_hash = html.escape(tx.get("txHash", ""))
+    tx_id = html.escape(str(tx.get("id", "")))
+    source_name = html.escape((tx.get("source") or {}).get("name", "unknown"))
+    source_address = html.escape(tx.get("sourceAddress", ""))
 
     label = "💰 Incoming transfer received!" if not testnet else "🧪 [TESTNET] Incoming transfer received!"
-    lines = [
+    lines = []
+    if category:
+        lines.append(f"<b>{html.escape(category)}</b>")
+    lines.extend([
         label,
         f"Amount:  {amount} {asset}",
         f"From:    {source_name}",
-    ]
+    ])
     if source_address:
         lines.append(f"Address: {source_address}")
     if tx_hash:
@@ -63,7 +71,7 @@ def format_alert(tx: dict, testnet: bool = False) -> str:
 
 
 async def send_alert_with_poll(bot: Bot, alert_text: str, state: dict) -> None:
-    await bot.send_message(chat_id=CHAT_ID, text=alert_text)
+    await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
     poll_msg = await bot.send_poll(
         chat_id=CHAT_ID,
         question="Respond to this transfer alert.",
@@ -86,6 +94,7 @@ async def poll_fireblocks(
     asset_id: str,
     contract_address: str,
     state_key: str,
+    category: Optional[str] = None,
     testnet: bool = False,
 ) -> None:
     now_ms = int(time.time() * 1000)
@@ -99,7 +108,7 @@ async def poll_fireblocks(
         logger.info(f"Found {len(txs)} new {label} transaction(s)")
     for tx in txs:
         try:
-            alert_text = format_alert(tx, testnet=testnet)
+            alert_text = format_alert(tx, category=category, testnet=testnet)
             await send_alert_with_poll(bot, alert_text, state)
         except TelegramError as e:
             logger.error(f"Failed to send alert for tx {tx.get('id')}: {e}")
@@ -152,35 +161,58 @@ async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
 async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     now_ms = int(time.time() * 1000)
 
-    logger.info(f"Daily mainnet check — polling rAI vault after {state['last_checked_ms']} ...")
-    rai_txs = get_incoming_transactions(sdk, VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS)
+    logger.info(f"Daily mainnet check — polling rAI subscription vault after {state['last_checked_ms']} ...")
+    rai_sub_txs = get_incoming_transactions(sdk, VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS)
 
-    logger.info(f"Daily mainnet check — polling rSTR vault after {state['rstr_last_checked_ms']} ...")
-    rstr_txs = get_incoming_transactions(sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID, state["rstr_last_checked_ms"], RSTR_CONTRACT_ADDRESS)
+    logger.info(f"Daily mainnet check — polling rSTR subscription vault after {state['rstr_last_checked_ms']} ...")
+    rstr_sub_txs = get_incoming_transactions(sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID, state["rstr_last_checked_ms"], RSTR_CONTRACT_ADDRESS)
 
-    all_txs = rai_txs + rstr_txs
-    if all_txs:
-        logger.info(f"Found {len(all_txs)} new mainnet transaction(s) (rAI={len(rai_txs)}, rSTR={len(rstr_txs)})")
+    logger.info(f"Daily mainnet check — polling rAI redemption vault after {state['rai_redemption_last_checked_ms']} ...")
+    rai_redemption_txs = get_incoming_transactions(
+        sdk, RAI_REDEMPTION_VAULT_ACCOUNT_ID, RAI_REDEMPTION_ASSET_ID,
+        state["rai_redemption_last_checked_ms"], RAI_REDEMPTION_CONTRACT_ADDRESS,
+    )
 
-    for tx in all_txs:
+    subscription_txs = rai_sub_txs + rstr_sub_txs
+    redemption_txs = rai_redemption_txs
+    if subscription_txs or redemption_txs:
+        logger.info(
+            f"Found {len(subscription_txs)} subscription(s) "
+            f"(rAI={len(rai_sub_txs)}, rSTR={len(rstr_sub_txs)}), "
+            f"{len(redemption_txs)} redemption(s) (rAI={len(rai_redemption_txs)})"
+        )
+
+    for tx in subscription_txs:
         try:
-            alert_text = format_alert(tx, testnet=False)
+            alert_text = format_alert(tx, category="SUBSCRIPTIONS", testnet=False)
             await send_alert_with_poll(bot, alert_text, state)
         except TelegramError as e:
-            logger.error(f"Failed to send alert for tx {tx.get('id')}: {e}")
+            logger.error(f"Failed to send subscription alert for tx {tx.get('id')}: {e}")
+
+    for tx in redemption_txs:
+        try:
+            alert_text = format_alert(tx, category="REDEMPTIONS", testnet=False)
+            await send_alert_with_poll(bot, alert_text, state)
+        except TelegramError as e:
+            logger.error(f"Failed to send redemption alert for tx {tx.get('id')}: {e}")
 
     state["last_checked_ms"] = now_ms
     state["rstr_last_checked_ms"] = now_ms
+    state["rai_redemption_last_checked_ms"] = now_ms
     save_state(STATE_FILE, state)
 
-    if all_txs:
-        summary = f"✅ Daily vault check — {len(all_txs)} new transfer(s) found, alerts sent above.\n\n@daryllty"
+    total = len(subscription_txs) + len(redemption_txs)
+    if total:
+        summary = (
+            f"✅ Daily vault check — {len(subscription_txs)} subscription(s), "
+            f"{len(redemption_txs)} redemption(s), alerts sent above.\n\n@daryllty"
+        )
     else:
         summary = "✅ Polled the vault — no new incoming funds today.\n\nAll clear, relax for today!\n\n@daryllty"
 
     try:
         await bot.send_message(chat_id=CHAT_ID, text=summary)
-        logger.info(f"Daily summary sent (txs={len(all_txs)})")
+        logger.info(f"Daily summary sent (subs={len(subscription_txs)}, redemptions={len(redemption_txs)})")
     except TelegramError as e:
         logger.error(f"Failed to send daily summary: {e}")
 
@@ -224,7 +256,7 @@ async def main():
     sgt = pytz.timezone("Asia/Singapore")
     scheduler.add_job(
         daily_mainnet_check,
-        CronTrigger(hour=15, minute=30, timezone=sgt),
+        CronTrigger(day_of_week="tue-sat", hour=15, minute=30, timezone=sgt),
         kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="fireblocks_poll_mainnet",
     )
@@ -237,7 +269,7 @@ async def main():
                 "bot": bot, "sdk": testnet_sdk, "state": state,
                 "vault_account_id": TESTNET_VAULT_ACCOUNT_ID, "asset_id": TESTNET_ASSET_ID,
                 "contract_address": None, "state_key": "testnet_last_checked_ms",
-                "testnet": True,
+                "category": "SUBSCRIPTIONS", "testnet": True,
             },
             id="fireblocks_poll_testnet",
             next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=5),
@@ -255,14 +287,14 @@ async def main():
 
     scheduler.add_job(
         send_sweep_reminder,
-        CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone=sgt),
+        CronTrigger(day_of_week="tue-sat", hour=15, minute=30, timezone=sgt),
         kwargs={"bot": bot, "sdk": sdk},  # mainnet only
         id="sweep_reminder",
     )
 
     scheduler.start()
     testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"
-    logger.info(f"Running. Mainnet check daily at 15:30 SGT, ack check every 5s, sweep reminder weekdays 15:30 SGT. Testnet notifications: {testnet_status}.")
+    logger.info(f"Running. Mainnet check Tue-Sat 15:30 SGT, ack check every 5s, sweep reminder Tue-Sat 15:30 SGT. Testnet notifications: {testnet_status}.")
 
     try:
         await asyncio.Event().wait()
