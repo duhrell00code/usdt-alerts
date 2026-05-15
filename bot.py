@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import time
 import pytz
@@ -146,6 +147,37 @@ async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
     save_state(STATE_FILE, state)
 
 
+async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
+    now_ms = int(time.time() * 1000)
+    after_ms = state["last_checked_ms"]
+
+    logger.info(f"Daily mainnet check — polling for transactions after {after_ms} ...")
+    txs = get_incoming_transactions(sdk, VAULT_ACCOUNT_ID, ASSET_ID, after_ms, CONTRACT_ADDRESS)
+
+    if txs:
+        logger.info(f"Found {len(txs)} new mainnet transaction(s)")
+    for tx in txs:
+        try:
+            alert_text = format_alert(tx, testnet=False)
+            await send_alert_with_poll(bot, alert_text, state)
+        except TelegramError as e:
+            logger.error(f"Failed to send alert for tx {tx.get('id')}: {e}")
+
+    state["last_checked_ms"] = now_ms
+    save_state(STATE_FILE, state)
+
+    if txs:
+        summary = f"✅ Daily vault check — {len(txs)} new transfer(s) found, alerts sent above.\n\n@daryllty"
+    else:
+        summary = "✅ Polled the vault — no new incoming funds today.\n\nAll clear, relax for today!\n\n@daryllty"
+
+    try:
+        await bot.send_message(chat_id=CHAT_ID, text=summary)
+        logger.info(f"Daily summary sent (txs={len(txs)})")
+    except TelegramError as e:
+        logger.error(f"Failed to send daily summary: {e}")
+
+
 async def send_sweep_reminder(bot: Bot, sdk) -> None:
     balance = await asyncio.to_thread(get_vault_balance, sdk, VAULT_ACCOUNT_ID, ASSET_ID)
     if balance <= 0:
@@ -174,20 +206,12 @@ async def main():
 
     scheduler = AsyncIOScheduler(job_defaults={"misfire_grace_time": 60})
 
-    import datetime
-    now = datetime.datetime.now()
+    sgt = pytz.timezone("Asia/Singapore")
     scheduler.add_job(
-        poll_fireblocks,
-        "interval",
-        seconds=POLL_INTERVAL_SECONDS,
-        kwargs={
-            "bot": bot, "sdk": sdk, "state": state,
-            "vault_account_id": VAULT_ACCOUNT_ID, "asset_id": ASSET_ID,
-            "contract_address": CONTRACT_ADDRESS, "state_key": "last_checked_ms",
-            "testnet": False,
-        },
+        daily_mainnet_check,
+        CronTrigger(hour=15, minute=30, timezone=sgt),
+        kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="fireblocks_poll_mainnet",
-        next_run_time=now,
     )
     if TESTNET_NOTIFICATIONS_ENABLED:
         scheduler.add_job(
@@ -201,7 +225,7 @@ async def main():
                 "testnet": True,
             },
             id="fireblocks_poll_testnet",
-            next_run_time=now + datetime.timedelta(seconds=5),
+            next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=5),
         )
     else:
         logger.info("Testnet notifications disabled — skipping testnet poll job")
@@ -214,7 +238,6 @@ async def main():
         next_run_time=datetime.datetime.now(),
     )
 
-    sgt = pytz.timezone("Asia/Singapore")
     scheduler.add_job(
         send_sweep_reminder,
         CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone=sgt),
@@ -224,7 +247,7 @@ async def main():
 
     scheduler.start()
     testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"
-    logger.info(f"Running. Fireblocks poll every {POLL_INTERVAL_SECONDS}s, ack check every 5s, sweep reminder weekdays 15:30 SGT. Testnet notifications: {testnet_status}.")
+    logger.info(f"Running. Mainnet check daily at 15:30 SGT, ack check every 5s, sweep reminder weekdays 15:30 SGT. Testnet notifications: {testnet_status}.")
 
     try:
         await asyncio.Event().wait()
