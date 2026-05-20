@@ -16,7 +16,7 @@ from config import (
     CHAT_ID,
     FIREBLOCKS_API_KEY,
     FIREBLOCKS_PRIVATE_KEY_PATH,
-    VAULT_ACCOUNT_ID,
+    RAI_VAULT_ACCOUNT_ID,
     ASSET_ID,
     CONTRACT_ADDRESS,
     RSTR_VAULT_ACCOUNT_ID,
@@ -162,7 +162,7 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     now_ms = int(time.time() * 1000)
 
     logger.info(f"Daily mainnet check — polling rAI subscription vault after {state['last_checked_ms']} ...")
-    rai_sub_txs = get_incoming_transactions(sdk, VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS)
+    rai_sub_txs = get_incoming_transactions(sdk, RAI_VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS)
 
     logger.info(f"Daily mainnet check — polling rSTR subscription vault after {state['rstr_last_checked_ms']} ...")
     rstr_sub_txs = get_incoming_transactions(sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID, state["rstr_last_checked_ms"], RSTR_CONTRACT_ADDRESS)
@@ -219,7 +219,7 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
 
 async def send_sweep_reminder(bot: Bot, sdk) -> None:
     rai_balance, rstr_balance = await asyncio.gather(
-        asyncio.to_thread(get_vault_balance, sdk, VAULT_ACCOUNT_ID, ASSET_ID),
+        asyncio.to_thread(get_vault_balance, sdk, RAI_VAULT_ACCOUNT_ID, ASSET_ID),
         asyncio.to_thread(get_vault_balance, sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID),
     )
     if rai_balance < 99 and rstr_balance < 99:
