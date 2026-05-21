@@ -22,6 +22,9 @@ RAI_REDEMPTION_VAULT_ACCOUNT_ID = os.getenv("RAI_REDEMPTION_VAULT_ACCOUNT_ID")
 RAI_REDEMPTION_ASSET_ID = os.getenv("RAI_REDEMPTION_ASSET_ID")
 RAI_REDEMPTION_CONTRACT_ADDRESS = os.getenv("RAI_REDEMPTION_CONTRACT_ADDRESS", "").lower() or None
 
+# Dust filter — subscription vaults only (not redemption, which uses rAI tokens)
+DUST_THRESHOLD_USDT = float(os.getenv("DUST_THRESHOLD_USDT", "1.0"))
+
 # Testnet
 TESTNET_API_KEY = os.getenv("TESTNET_API_KEY")
 TESTNET_PRIVATE_KEY_PATH = os.getenv("TESTNET_PRIVATE_KEY_PATH")

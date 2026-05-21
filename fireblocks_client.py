@@ -33,6 +33,7 @@ def get_incoming_transactions(
     asset_id: str,
     after_ms: int,
     contract_address: Optional[str] = None,
+    min_amount: float = 0.0,
 ) -> list[dict]:
     """
     Return completed INCOMING transactions to vault_account_id for asset_id
@@ -67,6 +68,11 @@ def get_incoming_transactions(
         if contract_address:
             extra = tx.get("extraParameters") or {}
             if extra.get("contractAddress", "").lower() != contract_address:
+                continue
+        if min_amount > 0:
+            amount = float(tx.get("amount") or 0)
+            if amount < min_amount:
+                logger.debug(f"  skip {tx.get('id')}: amount {amount} < min_amount {min_amount}")
                 continue
         logger.info(f"  matched tx {tx.get('id')}")
         results.append(tx)

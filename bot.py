@@ -24,6 +24,7 @@ from config import (
     RAI_REDEMPTION_VAULT_ACCOUNT_ID,
     RAI_REDEMPTION_ASSET_ID,
     RAI_REDEMPTION_CONTRACT_ADDRESS,
+    DUST_THRESHOLD_USDT,
     TESTNET_API_KEY,
     TESTNET_PRIVATE_KEY_PATH,
     TESTNET_VAULT_ACCOUNT_ID,
@@ -162,10 +163,10 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     now_ms = int(time.time() * 1000)
 
     logger.info(f"Daily mainnet check — polling rAI subscription vault after {state['last_checked_ms']} ...")
-    rai_sub_txs = get_incoming_transactions(sdk, RAI_VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS)
+    rai_sub_txs = get_incoming_transactions(sdk, RAI_VAULT_ACCOUNT_ID, ASSET_ID, state["last_checked_ms"], CONTRACT_ADDRESS, min_amount=DUST_THRESHOLD_USDT)
 
     logger.info(f"Daily mainnet check — polling rSTR subscription vault after {state['rstr_last_checked_ms']} ...")
-    rstr_sub_txs = get_incoming_transactions(sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID, state["rstr_last_checked_ms"], RSTR_CONTRACT_ADDRESS)
+    rstr_sub_txs = get_incoming_transactions(sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID, state["rstr_last_checked_ms"], RSTR_CONTRACT_ADDRESS, min_amount=DUST_THRESHOLD_USDT)
 
     logger.info(f"Daily mainnet check — polling rAI redemption vault after {state['rai_redemption_last_checked_ms']} ...")
     rai_redemption_txs = get_incoming_transactions(
