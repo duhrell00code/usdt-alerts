@@ -43,6 +43,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 RENOTIFY_SECONDS = 1800  # 30 minutes
+SWEEP_RENOTIFY_SECONDS = 300  # 5-minute nag — sweep window is 16:00–16:25 SGT
 
 
 def format_alert(tx: dict, category: Optional[str] = None, testnet: bool = False) -> str:
@@ -65,24 +66,39 @@ def format_alert(tx: dict, category: Optional[str] = None, testnet: bool = False
     if source_address:
         lines.append(f"Address: {source_address}")
     if tx_hash:
-        lines.append(f"Tx hash: {tx_hash}")
+        lines.append(f'Tx hash: <a href="https://bscscan.com/tx/{tx_hash}">{tx_hash}</a>')
     lines.append(f"Fireblocks ID: {tx_id}")
     lines.append("@daryllty")
     return "\n".join(lines)
 
 
-async def send_alert_with_poll(bot: Bot, alert_text: str, state: dict) -> None:
+def format_amount_table(txs: list[dict]) -> str:
+    lines = []
+    total = 0.0
+    asset = ""
+    for tx in txs:
+        amt = float(tx.get("amount") or 0)
+        asset = html.escape(tx.get("assetId", ""))
+        total += amt
+        lines.append(f"  {amt:,.2f} {asset}")
+    lines.append(f"  {'─' * 22}")
+    lines.append(f"  <b>Total: {total:,.2f} {asset}</b>")
+    return "\n".join(lines)
+
+
+async def send_alert_with_poll(bot: Bot, alert_text: str, state: dict, renotify_seconds: int = RENOTIFY_SECONDS) -> None:
     await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
     poll_msg = await bot.send_poll(
         chat_id=CHAT_ID,
-        question="Respond to this transfer alert.",
-        options=["✅ Acknowledge", "⏰ Snooze (30 min)"],
+        question="Tap to acknowledge this alert.",
+        options=["✅ Acknowledge"],
         is_anonymous=False,
     )
     poll_id = poll_msg.poll.id
     state["pending_polls"][poll_id] = {
         "sent_at": int(time.time()),
         "alert_text": alert_text,
+        "renotify_seconds": renotify_seconds,
     }
     logger.info(f"Poll sent: {poll_id}")
 
@@ -140,15 +156,11 @@ async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
             del state["pending_polls"][poll_id]
             logger.info(f"Poll {poll_id} acknowledged")
             await bot.send_message(chat_id=CHAT_ID, text="✅ Transfer acknowledged by @daryllty")
-        elif 1 in option_ids:  # Snooze
-            state["pending_polls"][poll_id]["sent_at"] = int(time.time())
-            logger.info(f"Poll {poll_id} snoozed — resetting 30-min timer")
-            await bot.send_message(chat_id=CHAT_ID, text="⏰ Snoozed — will remind again in 30 minutes.")
 
-    # Re-alert for any poll unacknowledged or snoozed past 30 minutes
+    # Re-alert for any poll unacknowledged or snoozed past its nag interval
     now = int(time.time())
     for poll_id, poll_data in list(state["pending_polls"].items()):
-        if now - poll_data["sent_at"] >= RENOTIFY_SECONDS:
+        if now - poll_data["sent_at"] >= poll_data.get("renotify_seconds", RENOTIFY_SECONDS):
             logger.info(f"Poll {poll_id} unacknowledged after 30min — re-sending alert")
             try:
                 del state["pending_polls"][poll_id]
@@ -186,14 +198,14 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     for tx in subscription_txs:
         try:
             alert_text = format_alert(tx, category="SUBSCRIPTIONS", testnet=False)
-            await send_alert_with_poll(bot, alert_text, state)
+            await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
         except TelegramError as e:
             logger.error(f"Failed to send subscription alert for tx {tx.get('id')}: {e}")
 
     for tx in redemption_txs:
         try:
             alert_text = format_alert(tx, category="REDEMPTIONS", testnet=False)
-            await send_alert_with_poll(bot, alert_text, state)
+            await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
         except TelegramError as e:
             logger.error(f"Failed to send redemption alert for tx {tx.get('id')}: {e}")
 
@@ -203,22 +215,29 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     save_state(STATE_FILE, state)
 
     total = len(subscription_txs) + len(redemption_txs)
-    if total:
-        summary = (
-            f"✅ Daily vault check — {len(subscription_txs)} subscription(s), "
-            f"{len(redemption_txs)} redemption(s), alerts sent above.\n\n@daryllty"
-        )
-    else:
-        summary = "✅ Polled the vault — no new incoming funds today.\n\nAll clear, relax for today!\n\n@daryllty"
-
     try:
-        await bot.send_message(chat_id=CHAT_ID, text=summary)
+        if total:
+            parts = [
+                f"✅ Daily vault check — {len(subscription_txs)} subscription(s), "
+                f"{len(redemption_txs)} redemption(s)\n"
+            ]
+            if subscription_txs:
+                parts.append(f"<b>SUBSCRIPTIONS</b>\n{format_amount_table(subscription_txs)}")
+            if redemption_txs:
+                parts.append(f"<b>REDEMPTIONS</b>\n{format_amount_table(redemption_txs)}")
+            parts.append("@daryllty")
+            await send_alert_with_poll(bot, "\n\n".join(parts), state)
+        else:
+            await bot.send_message(
+                chat_id=CHAT_ID,
+                text="✅ Polled the vault — no new incoming funds today.\n\nAll clear, relax for today!\n\n@daryllty",
+            )
         logger.info(f"Daily summary sent (subs={len(subscription_txs)}, redemptions={len(redemption_txs)})")
     except TelegramError as e:
         logger.error(f"Failed to send daily summary: {e}")
 
 
-async def send_sweep_reminder(bot: Bot, sdk) -> None:
+async def send_sweep_reminder(bot: Bot, sdk, state: dict) -> None:
     rai_balance, rstr_balance = await asyncio.gather(
         asyncio.to_thread(get_vault_balance, sdk, RAI_VAULT_ACCOUNT_ID, ASSET_ID),
         asyncio.to_thread(get_vault_balance, sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID),
@@ -232,7 +251,7 @@ async def send_sweep_reminder(bot: Bot, sdk) -> None:
     if rstr_balance >= 99:
         lines.append(f"rSTR Vault: {rstr_balance} {ASSET_ID}")
     try:
-        await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines))
+        await send_alert_with_poll(bot, "\n".join(lines), state, renotify_seconds=SWEEP_RENOTIFY_SECONDS)
         logger.info(f"Sweep reminder sent (rAI={rai_balance}, rSTR={rstr_balance})")
     except TelegramError as e:
         logger.error(f"Failed to send sweep reminder: {e}")
@@ -288,14 +307,14 @@ async def main():
 
     scheduler.add_job(
         send_sweep_reminder,
-        CronTrigger(day_of_week="tue-sat", hour=15, minute=30, timezone=sgt),
-        kwargs={"bot": bot, "sdk": sdk},  # mainnet only
+        CronTrigger(day_of_week="tue-sat", hour=16, minute=0, timezone=sgt),
+        kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="sweep_reminder",
     )
 
     scheduler.start()
     testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"
-    logger.info(f"Running. Mainnet check Tue-Sat 15:30 SGT, ack check every 5s, sweep reminder Tue-Sat 15:30 SGT. Testnet notifications: {testnet_status}.")
+    logger.info(f"Running. Mainnet check Tue-Sat 15:30 SGT, ack check every 5s, sweep reminder Tue-Sat 16:00 SGT. Testnet notifications: {testnet_status}.")
 
     try:
         await asyncio.Event().wait()
