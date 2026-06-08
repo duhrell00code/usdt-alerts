@@ -24,6 +24,11 @@ from config import (
     RAI_REDEMPTION_VAULT_ACCOUNT_ID,
     RAI_REDEMPTION_ASSET_ID,
     RAI_REDEMPTION_CONTRACT_ADDRESS,
+    RAIX_VAULT_ACCOUNT_ID,
+    RAIX_CONTRACT_ADDRESS,
+    RAIX_REDEMPTION_VAULT_ACCOUNT_ID,
+    RAIX_REDEMPTION_ASSET_ID,
+    RAIX_REDEMPTION_CONTRACT_ADDRESS,
     DUST_THRESHOLD_USDT,
     TESTNET_API_KEY,
     TESTNET_PRIVATE_KEY_PATH,
@@ -186,8 +191,25 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
         state["rai_redemption_last_checked_ms"], RAI_REDEMPTION_CONTRACT_ADDRESS,
     )
 
-    subscription_txs = rai_sub_txs + rstr_sub_txs
-    redemption_txs = rai_redemption_txs
+    logger.info(f"Daily mainnet check — polling rAIX subscription vault after {state['raix_last_checked_ms']} ...")
+    raix_sub_txs = get_incoming_transactions(
+        sdk, RAIX_VAULT_ACCOUNT_ID, ASSET_ID,
+        state["raix_last_checked_ms"], RAIX_CONTRACT_ADDRESS,
+        min_amount=DUST_THRESHOLD_USDT,
+    )
+
+    raix_redemption_txs = []
+    if RAIX_REDEMPTION_ASSET_ID:
+        logger.info(f"Daily mainnet check — polling rAIX redemption vault after {state['raix_redemption_last_checked_ms']} ...")
+        raix_redemption_txs = get_incoming_transactions(
+            sdk, RAIX_REDEMPTION_VAULT_ACCOUNT_ID, RAIX_REDEMPTION_ASSET_ID,
+            state["raix_redemption_last_checked_ms"], RAIX_REDEMPTION_CONTRACT_ADDRESS,
+        )
+    else:
+        logger.info("Daily mainnet check — skipping rAIX redemption vault (RAIX_REDEMPTION_ASSET_ID not set)")
+
+    subscription_txs = rai_sub_txs + rstr_sub_txs + raix_sub_txs
+    redemption_txs = rai_redemption_txs + raix_redemption_txs
     if subscription_txs or redemption_txs:
         logger.info(
             f"Found {len(subscription_txs)} subscription(s) "
@@ -212,6 +234,8 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
     state["last_checked_ms"] = now_ms
     state["rstr_last_checked_ms"] = now_ms
     state["rai_redemption_last_checked_ms"] = now_ms
+    state["raix_last_checked_ms"] = now_ms
+    state["raix_redemption_last_checked_ms"] = now_ms
     save_state(STATE_FILE, state)
 
     total = len(subscription_txs) + len(redemption_txs)
@@ -238,21 +262,24 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
 
 
 async def send_sweep_reminder(bot: Bot, sdk, state: dict) -> None:
-    rai_balance, rstr_balance = await asyncio.gather(
+    rai_balance, rstr_balance, raix_balance = await asyncio.gather(
         asyncio.to_thread(get_vault_balance, sdk, RAI_VAULT_ACCOUNT_ID, ASSET_ID),
         asyncio.to_thread(get_vault_balance, sdk, RSTR_VAULT_ACCOUNT_ID, ASSET_ID),
+        asyncio.to_thread(get_vault_balance, sdk, RAIX_VAULT_ACCOUNT_ID, ASSET_ID),
     )
-    if rai_balance < 99 and rstr_balance < 99:
-        logger.info(f"Sweep reminder skipped — rAI={rai_balance}, rSTR={rstr_balance}")
+    if rai_balance < 99 and rstr_balance < 99 and raix_balance < 99:
+        logger.info(f"Sweep reminder skipped — rAI={rai_balance}, rSTR={rstr_balance}, rAIX={raix_balance}")
         return
     lines = ["@daryllty Sweep funds -> FOMO", ""]
     if rai_balance >= 99:
         lines.append(f"rAI Vault:  {rai_balance} {ASSET_ID}")
     if rstr_balance >= 99:
         lines.append(f"rSTR Vault: {rstr_balance} {ASSET_ID}")
+    if raix_balance >= 99:
+        lines.append(f"rAIX Vault: {raix_balance} {ASSET_ID}")
     try:
         await send_alert_with_poll(bot, "\n".join(lines), state, renotify_seconds=SWEEP_RENOTIFY_SECONDS)
-        logger.info(f"Sweep reminder sent (rAI={rai_balance}, rSTR={rstr_balance})")
+        logger.info(f"Sweep reminder sent (rAI={rai_balance}, rSTR={rstr_balance}, rAIX={raix_balance})")
     except TelegramError as e:
         logger.error(f"Failed to send sweep reminder: {e}")
 
@@ -276,7 +303,7 @@ async def main():
     sgt = pytz.timezone("Asia/Singapore")
     scheduler.add_job(
         daily_mainnet_check,
-        CronTrigger(day_of_week="tue-sat", hour=15, minute=30, timezone=sgt),
+        CronTrigger(day_of_week="mon-sat", hour=15, minute=30, timezone=sgt),
         kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="fireblocks_poll_mainnet",
     )
@@ -307,14 +334,14 @@ async def main():
 
     scheduler.add_job(
         send_sweep_reminder,
-        CronTrigger(day_of_week="tue-sat", hour=16, minute=0, timezone=sgt),
+        CronTrigger(day_of_week="mon-sat", hour=16, minute=0, timezone=sgt),
         kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="sweep_reminder",
     )
 
     scheduler.start()
     testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"
-    logger.info(f"Running. Mainnet check Tue-Sat 15:30 SGT, ack check every 5s, sweep reminder Tue-Sat 16:00 SGT. Testnet notifications: {testnet_status}.")
+    logger.info(f"Running. Mainnet check Mon-Sat 15:30 SGT, ack check every 5s, sweep reminder Mon-Sat 16:00 SGT. Testnet notifications: {testnet_status}.")
 
     try:
         await asyncio.Event().wait()
