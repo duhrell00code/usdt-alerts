@@ -246,7 +246,18 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
                 f"{len(redemption_txs)} redemption(s)\n"
             ]
             if subscription_txs:
-                parts.append(f"<b>SUBSCRIPTIONS</b>\n{format_amount_table(subscription_txs)}")
+                sub_lines = []
+                total_amt = 0.0
+                asset = ""
+                for vault_label, txs in [("rAI", rai_sub_txs), ("rSTR", rstr_sub_txs), ("rAIX", raix_sub_txs)]:
+                    for tx in txs:
+                        amt = float(tx.get("amount") or 0)
+                        asset = html.escape(tx.get("assetId", ""))
+                        total_amt += amt
+                        sub_lines.append(f"  {vault_label}: {amt:,.2f} {asset}")
+                sub_lines.append(f"  {'─' * 22}")
+                sub_lines.append(f"  <b>Total: {total_amt:,.2f} {asset}</b>")
+                parts.append("<b>SUBSCRIPTIONS</b>\n" + "\n".join(sub_lines))
             if redemption_txs:
                 parts.append(f"<b>REDEMPTIONS</b>\n{format_amount_table(redemption_txs)}")
             parts.append("@daryllty")
