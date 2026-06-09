@@ -63,11 +63,21 @@ def format_alert(tx: dict, category: Optional[str] = None, testnet: bool = False
     lines = []
     if category:
         lines.append(f"<b>{html.escape(category)}</b>")
+    ts_ms = tx.get("createdAt") or tx.get("lastUpdated")
+    if ts_ms:
+        sgt = pytz.timezone("Asia/Singapore")
+        dt = datetime.datetime.fromtimestamp(ts_ms / 1000, tz=pytz.utc).astimezone(sgt)
+        date_str = dt.strftime("%d %b %Y %H:%M SGT")
+    else:
+        date_str = None
+
     lines.extend([
         label,
         f"Amount:  {amount} {asset}",
-        f"From:    {source_name}",
     ])
+    if date_str:
+        lines.append(f"Date:    {date_str}")
+    lines.append(f"From:    {source_name}")
     if source_address:
         lines.append(f"Address: {source_address}")
     if tx_hash:
@@ -91,12 +101,22 @@ def format_amount_table(txs: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def send_alert_with_poll(bot: Bot, alert_text: str, state: dict, renotify_seconds: int = RENOTIFY_SECONDS) -> None:
+POLL_OPTIONS_DEFAULT = ["✅ Acknowledge"]
+POLL_OPTIONS_SWEEP = ["✅ Transferred", "⏰ Delay"]
+
+
+async def send_alert_with_poll(
+    bot: Bot, alert_text: str, state: dict,
+    renotify_seconds: int = RENOTIFY_SECONDS,
+    options: list[str] = None,
+) -> None:
+    if options is None:
+        options = POLL_OPTIONS_DEFAULT
     await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
     poll_msg = await bot.send_poll(
         chat_id=CHAT_ID,
         question="Tap to acknowledge this alert.",
-        options=["✅ Acknowledge"],
+        options=options,
         is_anonymous=False,
     )
     poll_id = poll_msg.poll.id
@@ -104,6 +124,7 @@ async def send_alert_with_poll(bot: Bot, alert_text: str, state: dict, renotify_
         "sent_at": int(time.time()),
         "alert_text": alert_text,
         "renotify_seconds": renotify_seconds,
+        "options": options,
     }
     logger.info(f"Poll sent: {poll_id}")
 
@@ -157,10 +178,13 @@ async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
         option_ids = update.poll_answer.option_ids
         if poll_id not in state["pending_polls"]:
             continue
-        if 0 in option_ids:  # Acknowledge
+        if 0 in option_ids:  # Acknowledge / Transferred
             del state["pending_polls"][poll_id]
             logger.info(f"Poll {poll_id} acknowledged")
-            await bot.send_message(chat_id=CHAT_ID, text="✅ Transfer acknowledged by @daryllty")
+            await bot.send_message(chat_id=CHAT_ID, text="✅ Acknowledged by @daryllty")
+        elif 1 in option_ids:  # Delay — reset timer, re-nag after renotify_seconds
+            state["pending_polls"][poll_id]["sent_at"] = int(time.time())
+            logger.info(f"Poll {poll_id} delayed — resetting nag timer")
 
     # Re-alert for any poll unacknowledged or snoozed past its nag interval
     now = int(time.time())
@@ -169,7 +193,11 @@ async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
             logger.info(f"Poll {poll_id} unacknowledged after 30min — re-sending alert")
             try:
                 del state["pending_polls"][poll_id]
-                await send_alert_with_poll(bot, poll_data["alert_text"], state)
+                await send_alert_with_poll(
+                    bot, poll_data["alert_text"], state,
+                    renotify_seconds=poll_data.get("renotify_seconds", RENOTIFY_SECONDS),
+                    options=poll_data.get("options"),
+                )
             except TelegramError as e:
                 logger.error(f"Failed to re-send alert: {e}")
 
@@ -250,11 +278,11 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
                 total_amt = 0.0
                 asset = ""
                 for vault_label, txs in [("rAI", rai_sub_txs), ("rSTR", rstr_sub_txs), ("rAIX", raix_sub_txs)]:
-                    for tx in txs:
-                        amt = float(tx.get("amount") or 0)
-                        asset = html.escape(tx.get("assetId", ""))
-                        total_amt += amt
-                        sub_lines.append(f"  {vault_label}: {amt:,.2f} {asset}")
+                    if txs:
+                        vault_total = sum(float(tx.get("amount") or 0) for tx in txs)
+                        asset = html.escape(txs[0].get("assetId", ""))
+                        total_amt += vault_total
+                        sub_lines.append(f"  {vault_label}: {vault_total:,.2f} {asset}")
                 sub_lines.append(f"  {'─' * 22}")
                 sub_lines.append(f"  <b>Total: {total_amt:,.2f} {asset}</b>")
                 parts.append("<b>SUBSCRIPTIONS</b>\n" + "\n".join(sub_lines))
@@ -289,7 +317,7 @@ async def send_sweep_reminder(bot: Bot, sdk, state: dict) -> None:
     if raix_balance >= 99:
         lines.append(f"rAIX Vault: {raix_balance} {ASSET_ID}")
     try:
-        await send_alert_with_poll(bot, "\n".join(lines), state, renotify_seconds=SWEEP_RENOTIFY_SECONDS)
+        await send_alert_with_poll(bot, "\n".join(lines), state, renotify_seconds=SWEEP_RENOTIFY_SECONDS, options=POLL_OPTIONS_SWEEP)
         logger.info(f"Sweep reminder sent (rAI={rai_balance}, rSTR={rstr_balance}, rAIX={raix_balance})")
     except TelegramError as e:
         logger.error(f"Failed to send sweep reminder: {e}")
