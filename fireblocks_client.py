@@ -78,3 +78,43 @@ def get_incoming_transactions(
         results.append(tx)
 
     return results
+
+
+def get_nav_submissions(
+    sdk: FireblocksSDK,
+    vault_id: str,
+    contract_addresses: list[str],
+    after_ms: int,
+) -> list[dict]:
+    """
+    Return completed CONTRACT_CALL transactions from vault_id to any of the
+    given contract_addresses, after after_ms (Unix milliseconds).
+    """
+    try:
+        txs = sdk.get_transactions(
+            after=after_ms,
+            status=TRANSACTION_STATUS_COMPLETED,
+            limit=50,
+        )
+    except Exception as e:
+        logger.error(f"Fireblocks API error (NAV watch): {e}")
+        return []
+
+    contract_set = {addr.lower() for addr in contract_addresses if addr}
+    results = []
+    for tx in txs:
+        if tx.get("txType") != "CONTRACT_CALL":
+            continue
+        source = tx.get("source", {})
+        if source.get("type") != "VAULT_ACCOUNT" or str(source.get("id")) != str(vault_id):
+            continue
+        dest = tx.get("destination", {})
+        dest_addr = ""
+        if dest.get("type") == "ONE_TIME_ADDRESS":
+            dest_addr = dest.get("oneTimeAddress", {}).get("address", "")
+        if not dest_addr:
+            dest_addr = (tx.get("extraParameters") or {}).get("contractAddress", "")
+        if dest_addr.lower() in contract_set:
+            results.append(tx)
+
+    return results

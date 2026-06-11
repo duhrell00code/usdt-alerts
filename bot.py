@@ -37,8 +37,12 @@ from config import (
     TESTNET_NOTIFICATIONS_ENABLED,
     POLL_INTERVAL_SECONDS,
     STATE_FILE,
+    NAV_VAULT_ID,
+    RAI_NAV_CONTRACT,
+    RSTR_NAV_CONTRACT,
+    RAIX_NAV_CONTRACT,
 )
-from fireblocks_client import load_sdk, get_incoming_transactions, get_vault_balance
+from fireblocks_client import load_sdk, get_incoming_transactions, get_vault_balance, get_nav_submissions
 from state import load_state, save_state
 
 logging.basicConfig(
@@ -323,6 +327,84 @@ async def send_sweep_reminder(bot: Bot, sdk, state: dict) -> None:
         logger.error(f"Failed to send sweep reminder: {e}")
 
 
+NAV_CONTRACTS = {
+    addr: name
+    for addr, name in [
+        (RAI_NAV_CONTRACT, "rAI"),
+        (RSTR_NAV_CONTRACT, "rSTR"),
+        (RAIX_NAV_CONTRACT, "rAIX"),
+    ]
+    if addr
+}
+
+
+async def send_nav_alert(bot: Bot, fund_name: str, tx: dict) -> None:
+    sgt = pytz.timezone("Asia/Singapore")
+    time_str = datetime.datetime.now(tz=sgt).strftime("%-I:%M%p SGT").lower()
+    tx_hash = html.escape(tx.get("txHash", ""))
+    fb_id = html.escape(str(tx.get("id", "")))
+    lines = [
+        f"✅ <b>NAV submitted — {html.escape(fund_name)}</b>",
+        f"Confirmed on BSC at {time_str}.",
+    ]
+    if tx_hash:
+        lines.append(f'Tx: <a href="https://bscscan.com/tx/{tx_hash}">{tx_hash}</a>')
+    lines.append(f"Fireblocks ID: {fb_id}")
+    lines.append("@daryllty")
+    await bot.send_message(chat_id=CHAT_ID, text="\n".join(lines), parse_mode="HTML")
+
+
+async def poll_nav_submissions(bot: Bot, sdk, nav_state: dict, scheduler) -> None:
+    sgt = pytz.timezone("Asia/Singapore")
+    now_sgt = datetime.datetime.now(tz=sgt)
+
+    if now_sgt.hour > 9 or (now_sgt.hour == 9 and now_sgt.minute >= 30):
+        try:
+            scheduler.remove_job("nav_poll")
+        except Exception:
+            pass
+        logger.info("NAV watch window closed (9:30AM SGT)")
+        return
+
+    txs = get_nav_submissions(sdk, NAV_VAULT_ID, list(NAV_CONTRACTS.keys()), nav_state["since_ms"])
+    for tx in txs:
+        dest = tx.get("destination", {})
+        dest_addr = dest.get("oneTimeAddress", {}).get("address", "") if dest.get("type") == "ONE_TIME_ADDRESS" else ""
+        if not dest_addr:
+            dest_addr = (tx.get("extraParameters") or {}).get("contractAddress", "")
+        fund = NAV_CONTRACTS.get(dest_addr.lower())
+        if not fund or fund in nav_state["alerted"]:
+            continue
+        try:
+            await send_nav_alert(bot, fund, tx)
+            nav_state["alerted"].add(fund)
+            logger.info(f"NAV alert sent for {fund}")
+        except TelegramError as e:
+            logger.error(f"Failed to send NAV alert for {fund}: {e}")
+
+    if nav_state["alerted"] >= set(NAV_CONTRACTS.values()):
+        try:
+            scheduler.remove_job("nav_poll")
+        except Exception:
+            pass
+        logger.info("All NAV submissions confirmed — watch stopped")
+
+
+async def start_nav_watch(bot: Bot, sdk, nav_state: dict, scheduler) -> None:
+    nav_state["since_ms"] = int(time.time() * 1000)
+    nav_state["alerted"] = set()
+    scheduler.add_job(
+        poll_nav_submissions,
+        "interval",
+        seconds=30,
+        kwargs={"bot": bot, "sdk": sdk, "nav_state": nav_state, "scheduler": scheduler},
+        id="nav_poll",
+        next_run_time=datetime.datetime.now(),
+        replace_existing=True,
+    )
+    logger.info("NAV watch started (9AM SGT — polling every 30s until 9:30AM)")
+
+
 async def main():
     bot = Bot(token=BOT_TOKEN)
     me = await bot.get_me()
@@ -377,6 +459,18 @@ async def main():
         kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="sweep_reminder",
     )
+
+    nav_state = {"since_ms": 0, "alerted": set()}
+    if NAV_VAULT_ID and NAV_CONTRACTS:
+        scheduler.add_job(
+            start_nav_watch,
+            CronTrigger(day_of_week="tue-sat", hour=9, minute=0, timezone=sgt),
+            kwargs={"bot": bot, "sdk": sdk, "nav_state": nav_state, "scheduler": scheduler},
+            id="nav_watch_start",
+        )
+        logger.info(f"NAV watch registered for Tue-Sat 9:00AM SGT (vault {NAV_VAULT_ID}, {len(NAV_CONTRACTS)} contracts)")
+    else:
+        logger.warning("NAV watch disabled — set NAV_VAULT_ID + NAV contract addresses in env")
 
     scheduler.start()
     testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"

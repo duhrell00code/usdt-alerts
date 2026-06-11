@@ -34,6 +34,12 @@ RAIX_REDEMPTION_CONTRACT_ADDRESS = os.getenv("RAIX_REDEMPTION_CONTRACT_ADDRESS",
 # Dust filter — subscription vaults only (not redemption, which uses rAI tokens)
 DUST_THRESHOLD_USDT = float(os.getenv("DUST_THRESHOLD_USDT", "1.0"))
 
+# NAV submission monitoring — contract call from Vault 3 to each fund's NAV contract
+NAV_VAULT_ID = os.getenv("NAV_VAULT_ID")
+RAI_NAV_CONTRACT = os.getenv("RAI_NAV_CONTRACT", "").lower() or None
+RSTR_NAV_CONTRACT = os.getenv("RSTR_NAV_CONTRACT", "").lower() or None
+RAIX_NAV_CONTRACT = os.getenv("RAIX_NAV_CONTRACT", "").lower() or None
+
 # Testnet
 TESTNET_API_KEY = os.getenv("TESTNET_API_KEY")
 TESTNET_PRIVATE_KEY_PATH = os.getenv("TESTNET_PRIVATE_KEY_PATH")
