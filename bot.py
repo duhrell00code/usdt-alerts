@@ -164,6 +164,34 @@ async def poll_fireblocks(
     save_state(STATE_FILE, state)
 
 
+async def poll_mainnet_interval(bot: Bot, sdk, state: dict) -> None:
+    now_ms = int(time.time() * 1000)
+    after_ms = state["interval_last_checked_ms"]
+
+    vault_checks = [
+        (RAI_VAULT_ACCOUNT_ID,  ASSET_ID, CONTRACT_ADDRESS,  "SUBSCRIPTIONS"),
+        (RSTR_VAULT_ACCOUNT_ID, ASSET_ID, RSTR_CONTRACT_ADDRESS, "SUBSCRIPTIONS"),
+        (RAIX_VAULT_ACCOUNT_ID, ASSET_ID, RAIX_CONTRACT_ADDRESS, "SUBSCRIPTIONS"),
+        (RAI_REDEMPTION_VAULT_ACCOUNT_ID, RAI_REDEMPTION_ASSET_ID, RAI_REDEMPTION_CONTRACT_ADDRESS, "REDEMPTIONS"),
+    ]
+    if RAIX_REDEMPTION_ASSET_ID:
+        vault_checks.append(
+            (RAIX_REDEMPTION_VAULT_ACCOUNT_ID, RAIX_REDEMPTION_ASSET_ID, RAIX_REDEMPTION_CONTRACT_ADDRESS, "REDEMPTIONS")
+        )
+
+    for vault_id, asset_id, contract_addr, category in vault_checks:
+        min_amt = DUST_THRESHOLD_USDT if category == "SUBSCRIPTIONS" else 0.0
+        txs = get_incoming_transactions(sdk, vault_id, asset_id, after_ms, contract_addr, min_amount=min_amt)
+        for tx in txs:
+            try:
+                await send_alert_with_poll(bot, format_alert(tx, category=category), state)
+            except TelegramError as e:
+                logger.error(f"Interval poll alert error for {tx.get('id')}: {e}")
+
+    state["interval_last_checked_ms"] = now_ms
+    save_state(STATE_FILE, state)
+
+
 async def check_unacknowledged_polls(bot: Bot, state: dict) -> None:
     try:
         updates = await bot.get_updates(
@@ -248,20 +276,6 @@ async def daily_mainnet_check(bot: Bot, sdk, state: dict) -> None:
             f"(rAI={len(rai_sub_txs)}, rSTR={len(rstr_sub_txs)}), "
             f"{len(redemption_txs)} redemption(s) (rAI={len(rai_redemption_txs)})"
         )
-
-    for tx in subscription_txs:
-        try:
-            alert_text = format_alert(tx, category="SUBSCRIPTIONS", testnet=False)
-            await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
-        except TelegramError as e:
-            logger.error(f"Failed to send subscription alert for tx {tx.get('id')}: {e}")
-
-    for tx in redemption_txs:
-        try:
-            alert_text = format_alert(tx, category="REDEMPTIONS", testnet=False)
-            await bot.send_message(chat_id=CHAT_ID, text=alert_text, parse_mode="HTML")
-        except TelegramError as e:
-            logger.error(f"Failed to send redemption alert for tx {tx.get('id')}: {e}")
 
     state["last_checked_ms"] = now_ms
     state["rstr_last_checked_ms"] = now_ms
@@ -358,18 +372,21 @@ async def poll_nav_submissions(bot: Bot, sdk, nav_state: dict, scheduler) -> Non
     sgt = pytz.timezone("Asia/Singapore")
     now_sgt = datetime.datetime.now(tz=sgt)
 
-    if now_sgt.hour > 9 or (now_sgt.hour == 9 and now_sgt.minute >= 30):
+    if now_sgt.hour >= 10:
         try:
             scheduler.remove_job("nav_poll")
         except Exception:
             pass
-        logger.info("NAV watch window closed (9:30AM SGT)")
+        logger.info("NAV watch window closed (10:00AM SGT)")
         return
 
     txs = get_nav_submissions(sdk, NAV_VAULT_ID, list(NAV_CONTRACTS.keys()), nav_state["since_ms"])
     for tx in txs:
-        dest = tx.get("destination", {})
-        dest_addr = dest.get("oneTimeAddress", {}).get("address", "") if dest.get("type") == "ONE_TIME_ADDRESS" else ""
+        dest_addr = tx.get("destinationAddress", "")
+        if not dest_addr:
+            dest = tx.get("destination", {})
+            if dest.get("type") == "ONE_TIME_ADDRESS":
+                dest_addr = dest.get("oneTimeAddress", {}).get("address", "")
         if not dest_addr:
             dest_addr = (tx.get("extraParameters") or {}).get("contractAddress", "")
         fund = NAV_CONTRACTS.get(dest_addr.lower())
@@ -391,7 +408,10 @@ async def poll_nav_submissions(bot: Bot, sdk, nav_state: dict, scheduler) -> Non
 
 
 async def start_nav_watch(bot: Bot, sdk, nav_state: dict, scheduler) -> None:
-    nav_state["since_ms"] = int(time.time() * 1000)
+    # Always scan from 9:00AM SGT so restarts during the window don't miss earlier txs
+    sgt = pytz.timezone("Asia/Singapore")
+    window_start = datetime.datetime.now(tz=sgt).replace(hour=9, minute=0, second=0, microsecond=0)
+    nav_state["since_ms"] = int(window_start.timestamp() * 1000)
     nav_state["alerted"] = set()
     scheduler.add_job(
         poll_nav_submissions,
@@ -423,8 +443,16 @@ async def main():
 
     sgt = pytz.timezone("Asia/Singapore")
     scheduler.add_job(
+        poll_mainnet_interval,
+        "interval",
+        seconds=300,
+        kwargs={"bot": bot, "sdk": sdk, "state": state},
+        id="mainnet_interval_poll",
+        next_run_time=datetime.datetime.now() + datetime.timedelta(seconds=10),
+    )
+    scheduler.add_job(
         daily_mainnet_check,
-        CronTrigger(day_of_week="mon-sat", hour=15, minute=30, timezone=sgt),
+        CronTrigger(day_of_week="mon-fri", hour=15, minute=30, timezone=sgt),
         kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="fireblocks_poll_mainnet",
     )
@@ -455,7 +483,7 @@ async def main():
 
     scheduler.add_job(
         send_sweep_reminder,
-        CronTrigger(day_of_week="mon-sat", hour=16, minute=0, timezone=sgt),
+        CronTrigger(day_of_week="mon-fri", hour=16, minute=0, timezone=sgt),
         kwargs={"bot": bot, "sdk": sdk, "state": state},
         id="sweep_reminder",
     )
@@ -467,14 +495,23 @@ async def main():
             CronTrigger(day_of_week="tue-sat", hour=9, minute=0, timezone=sgt),
             kwargs={"bot": bot, "sdk": sdk, "nav_state": nav_state, "scheduler": scheduler},
             id="nav_watch_start",
+            misfire_grace_time=1800,
         )
         logger.info(f"NAV watch registered for Tue-Sat 9:00AM SGT (vault {NAV_VAULT_ID}, {len(NAV_CONTRACTS)} contracts)")
     else:
         logger.warning("NAV watch disabled — set NAV_VAULT_ID + NAV contract addresses in env")
 
     scheduler.start()
+
+    # If the bot starts (or restarts) during the NAV watch window, kick off the poller immediately.
+    if NAV_VAULT_ID and NAV_CONTRACTS:
+        now_sgt = datetime.datetime.now(tz=sgt)
+        in_window = now_sgt.weekday() in (1, 2, 3, 4, 5) and now_sgt.hour == 9
+        if in_window:
+            logger.info("Started within NAV watch window — launching poller immediately")
+            await start_nav_watch(bot=bot, sdk=sdk, nav_state=nav_state, scheduler=scheduler)
     testnet_status = "enabled" if TESTNET_NOTIFICATIONS_ENABLED else "disabled"
-    logger.info(f"Running. Mainnet check Mon-Sat 15:30 SGT, ack check every 5s, sweep reminder Mon-Sat 16:00 SGT. Testnet notifications: {testnet_status}.")
+    logger.info(f"Running. Mainnet interval poll every 5min, daily check Mon-Fri 15:30 SGT, sweep reminder Mon-Fri 16:00 SGT, ack check every 5s. Testnet notifications: {testnet_status}.")
 
     try:
         await asyncio.Event().wait()

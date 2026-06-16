@@ -15,6 +15,7 @@ def load_state(path: str) -> dict:
         data.setdefault("rai_redemption_last_checked_ms", _now_ms() - LOOKBACK_MS)
         data.setdefault("raix_last_checked_ms", _now_ms() - LOOKBACK_MS)
         data.setdefault("raix_redemption_last_checked_ms", _now_ms() - LOOKBACK_MS)
+        data.setdefault("interval_last_checked_ms", _now_ms() - LOOKBACK_MS)
         data.setdefault("testnet_last_checked_ms", _now_ms() - LOOKBACK_MS)
         data.setdefault("update_offset", 0)
         data.setdefault("pending_polls", {})
@@ -26,6 +27,7 @@ def load_state(path: str) -> dict:
         "rai_redemption_last_checked_ms": now - LOOKBACK_MS,
         "raix_last_checked_ms": now - LOOKBACK_MS,
         "raix_redemption_last_checked_ms": now - LOOKBACK_MS,
+        "interval_last_checked_ms": now - LOOKBACK_MS,
         "testnet_last_checked_ms": now - LOOKBACK_MS,
         "update_offset": 0,
         "pending_polls": {},
